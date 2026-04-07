@@ -1,0 +1,21 @@
+{
+  "name": "@agent-broker/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./schema": "./src/schema.js",
+    "./reply": "./src/reply.js"
+  },
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "lint": "eslint src tests"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

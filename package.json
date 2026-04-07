@@ -1,0 +1,21 @@
+{
+  "name": "agent-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "pnpm -r run lint",
+    "test": "pnpm -r run test",
+    "build": "pnpm -r run build",
+    "format": "prettier --write \"**/*.{js,ts,json,md,yaml,vue}\" --ignore-path .gitignore"
+  },
+  "devDependencies": {
+    "eslint": "^9.6.0",
+    "prettier": "^3.3.0",
+    "globals": "^15.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

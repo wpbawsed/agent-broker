@@ -1,0 +1,15 @@
+{
+  "name": "@agent-broker/example-devops-agent",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "start:dev": "node --env-file=.env --watch src/index.js",
+    "lint": "eslint src"
+  },
+  "dependencies": {
+    "@agent-broker/core": "workspace:*",
+    "@agent-broker/sdk": "workspace:*"
+  }
+}

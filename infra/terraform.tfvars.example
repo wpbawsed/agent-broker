@@ -1,0 +1,12 @@
+aws_region           = "ap-northeast-1"
+project_name         = "agent-broker"
+environment          = "prod"
+
+# From Slack App → Basic Information → App Credentials → Signing Secret
+slack_signing_secret = ""
+
+# From Slack App → OAuth & Permissions → Bot User OAuth Token (after app install, starts with xoxb-)
+slack_bot_token      = ""
+
+# Generate a random string and append as ?token=<value> when registering the Jira Webhook
+jira_webhook_secret  = ""
