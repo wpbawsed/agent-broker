@@ -30,6 +30,7 @@ export const BrokerEventSchema = z.object({
     metadata: z.record(z.unknown()).optional(),
   }),
   requested_by: z.string(),
+  tenant_id: z.string().default('default'),
   tags: z.array(z.string()).optional(),
   priority: z.enum(['low', 'normal', 'high']).default('normal'),
   ttl: z.number().int().positive().default(3600),

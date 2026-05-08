@@ -1,5 +1,5 @@
-import { AgentConsumer } from '@agent-broker/sdk'
-import { setSlackReaction } from '@agent-broker/core'
+import { AgentConsumer } from '@wpbawsed/agent-broker-sdk'
+import { setSlackReaction } from '@wpbawsed/agent-broker-core'
 
 const agent = new AgentConsumer({
   queueUrl: process.env.QUEUE_URL,

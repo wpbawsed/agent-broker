@@ -1,5 +1,5 @@
 {
-  "name": "@agent-broker/example-devops-agent",
+  "name": "@wpbawsed/example-devops-agent",
   "version": "0.1.0",
   "type": "module",
   "private": true,
@@ -9,7 +9,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "@agent-broker/core": "workspace:*",
-    "@agent-broker/sdk": "workspace:*"
+    "@wpbawsed/agent-broker-core": "^0.1.0",
+    "@wpbawsed/agent-broker-sdk": "^0.1.1"
   }
 }

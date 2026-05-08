@@ -1,8 +1,12 @@
 {
-  "name": "@agent-broker/core",
+  "name": "@wpbawsed/agent-broker-core",
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.js",
+  "files": ["src"],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.js",
     "./schema": "./src/schema.js",

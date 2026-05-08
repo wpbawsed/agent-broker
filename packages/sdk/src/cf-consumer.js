@@ -1,19 +1,21 @@
 import { EventEmitter } from 'events'
-import {
-  SQSClient,
-  ReceiveMessageCommand,
-  DeleteMessageCommand,
-  ChangeMessageVisibilityCommand,
-} from '@aws-sdk/client-sqs'
 import { dispatchReply } from '@wpbawsed/agent-broker-core/reply'
 import { HealthServer } from './health.js'
 
+const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
+
 /**
- * AgentConsumer — SQS long-polling consumer for Agent Broker agents.
+ * QueueConsumer — Queue HTTP pull consumer for Agent Broker agents.
+ *
+ * Polls the queue REST API using the pull model. Emits the same
+ * 'message' events as AgentConsumer so it can be used as a drop-in
+ * replacement when the broker is cloud-hosted.
  *
  * @example
- * const agent = new AgentConsumer({
- *   queueUrl: process.env.QUEUE_URL,
+ * const agent = new QueueConsumer({
+ *   accountId: process.env.CF_ACCOUNT_ID,
+ *   queueId: process.env.CF_QUEUE_ID,       // from broker's queueId
+ *   apiToken: process.env.CF_API_TOKEN,
  *   agentId: 'my-devops-agent',
  * })
  * agent.on('message', async (event, ctx) => {
@@ -23,9 +25,10 @@ import { HealthServer } from './health.js'
  * })
  * agent.start()
  */
-export class AgentConsumer extends EventEmitter {
-  #client
-  #queueUrl
+export class QueueConsumer extends EventEmitter {
+  #accountId
+  #queueId
+  #apiToken
   #agentId
   #tenantId
   #concurrency
@@ -34,27 +37,34 @@ export class AgentConsumer extends EventEmitter {
   #active = 0
   #dashboardUrl = null
   #heartbeatTimer = null
+  #pollIntervalMs
 
   constructor({
-    queueUrl,
+    accountId,
+    queueId,
+    apiToken,
     agentId,
     tenantId = 'default',
-    region = process.env.AWS_REGION || 'ap-northeast-1',
-    concurrency = 1,
+    concurrency = 5,
+    pollIntervalMs = 2000,
     healthPort = 3001,
     replyOptions = {},
     dashboardUrl = null,
   }) {
     super()
-    if (!queueUrl) throw new TypeError('queueUrl is required')
+    if (!accountId) throw new TypeError('accountId is required')
+    if (!queueId) throw new TypeError('queueId is required')
+    if (!apiToken) throw new TypeError('apiToken is required')
     if (!agentId) throw new TypeError('agentId is required')
 
-    this.#queueUrl = queueUrl
+    this.#accountId = accountId
+    this.#queueId = queueId
+    this.#apiToken = apiToken
     this.#agentId = agentId
     this.#tenantId = tenantId
     this.#concurrency = concurrency
-    this.#client = new SQSClient({ region })
-    this.#healthServer = new HealthServer(agentId, queueUrl)
+    this.#pollIntervalMs = pollIntervalMs
+    this.#healthServer = new HealthServer(agentId, `cf-queue:${queueId}`)
     this._replyOptions = replyOptions
     this._healthPort = healthPort
     this.#dashboardUrl = dashboardUrl
@@ -64,9 +74,6 @@ export class AgentConsumer extends EventEmitter {
     return this.#agentId
   }
 
-  /**
-   * Start polling SQS and the health server.
-   */
   start() {
     if (this.#running) return
     this.#running = true
@@ -78,9 +85,6 @@ export class AgentConsumer extends EventEmitter {
     }
   }
 
-  /**
-   * Gracefully stop the consumer.
-   */
   async stop() {
     this.#running = false
     if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer)
@@ -97,25 +101,43 @@ export class AgentConsumer extends EventEmitter {
         tenant_id: this.#tenantId,
         active_jobs: this.#active,
       }),
-    }).catch(() => {}) // fire-and-forget, best-effort
+    }).catch(() => {})
   }
 
-  #reportEvent(brokerEvent) {
-    if (!this.#dashboardUrl) return
-    fetch(`${this.#dashboardUrl}/internal/events`, {
+  #cfRequest(path, options = {}) {
+    return fetch(`${CF_API_BASE}/accounts/${this.#accountId}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${this.#apiToken}`,
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    })
+  }
+
+  async #pullMessages(batchSize) {
+    const res = await this.#cfRequest(`/queues/${this.#queueId}/messages/pull`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(brokerEvent),
-    }).catch(() => {}) // fire-and-forget, best-effort
+      body: JSON.stringify({ batch_size: batchSize, visibility_timeout: 30 }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`CF Queue pull failed: ${res.status} ${body}`)
+    }
+    const data = await res.json()
+    return data.result?.messages ?? []
   }
 
-  #updateEventStatus(eventId, status) {
-    if (!this.#dashboardUrl) return
-    fetch(`${this.#dashboardUrl}/internal/events/${eventId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status }),
-    }).catch(() => {}) // fire-and-forget, best-effort
+  async #ackMessages(leaseIds) {
+    if (leaseIds.length === 0) return
+    const res = await this.#cfRequest(`/queues/${this.#queueId}/messages/ack`, {
+      method: 'POST',
+      body: JSON.stringify({ acks: leaseIds.map((id) => ({ lease_id: id })) }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      console.error(`[cf-consumer] ACK failed: ${res.status} ${body}`)
+    }
   }
 
   async #poll() {
@@ -127,25 +149,16 @@ export class AgentConsumer extends EventEmitter {
 
       let messages
       try {
-        const response = await this.#client.send(
-          new ReceiveMessageCommand({
-            QueueUrl: this.#queueUrl,
-            MaxNumberOfMessages: this.#concurrency - this.#active,
-            WaitTimeSeconds: 20,
-            AttributeNames: ['All'],
-          }),
-        )
-        messages = response.Messages || []
+        const batchSize = Math.min(10, this.#concurrency - this.#active)
+        messages = await this.#pullMessages(batchSize)
       } catch (err) {
         this.emit('error', err)
-        await sleep(2000)
+        await sleep(5000)
         continue
       }
 
       if (messages.length === 0) {
-        // Yield to the macrotask queue to avoid starving other callbacks
-        // when the mock/SQS returns immediately with no messages.
-        await sleep(100)
+        await sleep(this.#pollIntervalMs)
         continue
       }
 
@@ -161,16 +174,18 @@ export class AgentConsumer extends EventEmitter {
   async #processMessage(msg) {
     let brokerEvent
     try {
-      const snsWrapper = JSON.parse(msg.Body)
-      // SNS wraps message in { Message: "..." }
-      brokerEvent = JSON.parse(snsWrapper.Message ?? msg.Body)
+      brokerEvent = typeof msg.body === 'string' ? JSON.parse(msg.body) : msg.body
+      // CF Queue body may be double-JSON encoded
+      if (typeof brokerEvent === 'string') {
+        brokerEvent = JSON.parse(brokerEvent)
+      }
     } catch {
-      console.error('[agent-broker/sdk] Failed to parse message body')
+      console.error('[cf-consumer] Failed to parse message body')
+      // ACK malformed messages so they don't loop forever
+      await this.#ackMessages([msg.lease_id]).catch(() => {})
       return
     }
 
-    this.#reportEvent(brokerEvent)
-    this.#updateEventStatus(brokerEvent.event_id, 'processing')
     const ctx = this.#makeCtx(msg, brokerEvent)
 
     try {
@@ -181,10 +196,8 @@ export class AgentConsumer extends EventEmitter {
         ctx._reject = reject
       })
       this.#healthServer.incrementProcessed()
-      this.#updateEventStatus(brokerEvent.event_id, 'done')
     } catch (err) {
       this.#healthServer.incrementErrors()
-      this.#updateEventStatus(brokerEvent.event_id, 'failed')
       this.emit('error', err, brokerEvent, ctx)
     }
   }
@@ -198,30 +211,11 @@ export class AgentConsumer extends EventEmitter {
       _reject: null,
 
       /**
-       * Delete the message from SQS (mark as done).
+       * ACK the message (mark as done and delete from queue).
        */
       async done() {
-        await self.#client.send(
-          new DeleteMessageCommand({
-            QueueUrl: self.#queueUrl,
-            ReceiptHandle: rawMsg.ReceiptHandle,
-          }),
-        )
+        await self.#ackMessages([rawMsg.lease_id])
         ctx._resolve?.()
-      },
-
-      /**
-       * Extend the visibility timeout of the message.
-       * @param {number} seconds
-       */
-      async extend(seconds) {
-        await self.#client.send(
-          new ChangeMessageVisibilityCommand({
-            QueueUrl: self.#queueUrl,
-            ReceiptHandle: rawMsg.ReceiptHandle,
-            VisibilityTimeout: seconds,
-          }),
-        )
       },
 
       /**

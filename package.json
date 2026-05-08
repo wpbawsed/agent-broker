@@ -6,8 +6,7 @@
   "scripts": {
     "lint": "pnpm -r run lint",
     "test": "pnpm -r run test",
-    "build": "pnpm -r run build",
-    "format": "prettier --write \"**/*.{js,ts,json,md,yaml,vue}\" --ignore-path .gitignore"
+    "format": "prettier --write \"**/*.{js,ts,json,md,yaml}\" --ignore-path .gitignore"
   },
   "devDependencies": {
     "eslint": "^9.6.0",

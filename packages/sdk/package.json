@@ -1,8 +1,12 @@
 {
-  "name": "@agent-broker/sdk",
-  "version": "0.1.0",
+  "name": "@wpbawsed/agent-broker-sdk",
+  "version": "0.1.1",
   "type": "module",
   "main": "./src/index.js",
+  "files": ["src"],
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": "./src/index.js"
   },
@@ -12,7 +16,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.600.0",
-    "@agent-broker/core": "workspace:*"
+    "@wpbawsed/agent-broker-core": "^0.1.0"
   },
   "devDependencies": {
     "aws-sdk-client-mock": "^4.0.0",
