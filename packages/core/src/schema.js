@@ -4,7 +4,7 @@ import { randomUUID } from 'crypto'
 export const BrokerEventSchema = z.object({
   event_id: z.string().uuid(),
   created_at: z.string().datetime(),
-  source: z.enum(['slack', 'jira', 'github', 'webhook', 'agent']),
+  source: z.enum(['slack', 'jira', 'github', 'webhook', 'agent', 'notion']),
   source_meta: z.object({
     channel_id: z.string().optional(),
     thread_ts: z.string().optional(),

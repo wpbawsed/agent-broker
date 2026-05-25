@@ -38,6 +38,9 @@ export class QueueConsumer extends EventEmitter {
   #dashboardUrl = null
   #heartbeatTimer = null
   #pollIntervalMs
+  #visibilityTimeoutSecs
+  /** event_ids currently being processed — prevents duplicate execution on re-visibility */
+  #inFlight = new Set()
 
   constructor({
     accountId,
@@ -46,7 +49,8 @@ export class QueueConsumer extends EventEmitter {
     agentId,
     tenantId = 'default',
     concurrency = 5,
-    pollIntervalMs = 2000,
+    pollIntervalMs = 500,
+    visibilityTimeoutSecs = 600,
     healthPort = 3001,
     replyOptions = {},
     dashboardUrl = null,
@@ -64,6 +68,7 @@ export class QueueConsumer extends EventEmitter {
     this.#tenantId = tenantId
     this.#concurrency = concurrency
     this.#pollIntervalMs = pollIntervalMs
+    this.#visibilityTimeoutSecs = visibilityTimeoutSecs
     this.#healthServer = new HealthServer(agentId, `cf-queue:${queueId}`)
     this._replyOptions = replyOptions
     this._healthPort = healthPort
@@ -118,7 +123,10 @@ export class QueueConsumer extends EventEmitter {
   async #pullMessages(batchSize) {
     const res = await this.#cfRequest(`/queues/${this.#queueId}/messages/pull`, {
       method: 'POST',
-      body: JSON.stringify({ batch_size: batchSize, visibility_timeout: 30 }),
+      body: JSON.stringify({
+        batch_size: batchSize,
+        visibility_timeout: this.#visibilityTimeoutSecs,
+      }),
     })
     if (!res.ok) {
       const body = await res.text()
@@ -186,6 +194,18 @@ export class QueueConsumer extends EventEmitter {
       return
     }
 
+    // Deduplicate: skip if same event_id is already in-flight
+    const eventId = brokerEvent?.event_id
+    if (eventId && this.#inFlight.has(eventId)) {
+      console.warn(
+        `[cf-consumer] Duplicate event_id ${eventId} — skipping (visibility timeout too short or redelivery)`,
+      )
+      // ACK it so it doesn't keep reappearing
+      await this.#ackMessages([msg.lease_id]).catch(() => {})
+      return
+    }
+    if (eventId) this.#inFlight.add(eventId)
+
     const ctx = this.#makeCtx(msg, brokerEvent)
 
     try {
@@ -199,6 +219,8 @@ export class QueueConsumer extends EventEmitter {
     } catch (err) {
       this.#healthServer.incrementErrors()
       this.emit('error', err, brokerEvent, ctx)
+    } finally {
+      if (eventId) this.#inFlight.delete(eventId)
     }
   }
 

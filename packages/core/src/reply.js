@@ -136,3 +136,141 @@ export const setSlackReaction = async (
   }
   return data
 }
+
+/**
+ * Update one or more properties on a Notion page.
+ * Mirrors setSlackReaction() — used by agents to reflect processing state back
+ * to the originating Notion page (e.g. Status, Assignee, Result).
+ *
+ * @param {string} pageId     - Notion page ID from source_meta.raw.page_id
+ * @param {object} properties - Notion property patch object (Notion API format)
+ * @param {object} [opts]     - { notionToken }
+ *
+ * @example
+ * // Mark a page as "In Progress"
+ * await updateNotionPage(event.source_meta.raw.page_id, {
+ *   Status: { select: { name: 'In Progress' } },
+ * }, { notionToken: process.env.NOTION_TOKEN })
+ *
+ * // Write result back as a rich-text property
+ * await updateNotionPage(pageId, {
+ *   Result: { rich_text: [{ text: { content: replyText } }] },
+ * })
+ */
+export const updateNotionPage = async (pageId, properties, opts = {}) => {
+  const token = opts.notionToken || process.env.NOTION_TOKEN
+  if (!token) throw new Error('NOTION_TOKEN is required for Notion page updates')
+
+  const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+    },
+    body: JSON.stringify({ properties }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`Notion API error ${res.status}: ${err}`)
+  }
+  return res.json()
+}
+
+/**
+ * Fetch a Notion page's properties and metadata.
+ * Use this to retrieve the full page content after receiving a webhook event —
+ * the event itself only contains the page ID, not the actual content.
+ *
+ * @param {string} pageId   - Notion page ID
+ * @param {object} [opts]   - { notionToken }
+ * @returns {Promise<object|null>} Notion page object, or null if not found / no access
+ *
+ * @example
+ * const page = await fetchNotionPage(event.payload.entity.id, { notionToken: process.env.NOTION_TOKEN })
+ * const title = page?.properties?.title?.title?.[0]?.plain_text ?? '(untitled)'
+ */
+export const fetchNotionPage = async (pageId, opts = {}) => {
+  const token = opts.notionToken || process.env.NOTION_TOKEN
+  if (!token) throw new Error('NOTION_TOKEN is required for Notion page fetch')
+
+  const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+    },
+  })
+
+  if (!res.ok) return null
+  return res.json()
+}
+
+/**
+ * Fetch a Notion page's block children (the actual body/content).
+ * Page properties are metadata; the written content lives in blocks.
+ * Flattens all blocks into a plain-text string for easy LLM consumption.
+ *
+ * @param {string} pageId   - Notion page ID (same as block ID)
+ * @param {object} [opts]   - { notionToken, asText: boolean (default true) }
+ * @returns {Promise<string|object[]|null>}
+ *   - If asText=true (default): plain-text representation of all blocks
+ *   - If asText=false: raw blocks array from Notion API
+ *   - null if fetch failed
+ *
+ * @example
+ * const content = await fetchNotionBlocks(pageId, { notionToken: process.env.NOTION_TOKEN })
+ * // => "# 標題\n\n這裡是內文...\n- 清單項目"
+ */
+export const fetchNotionBlocks = async (pageId, opts = {}) => {
+  const token = opts.notionToken || process.env.NOTION_TOKEN
+  if (!token) throw new Error('NOTION_TOKEN is required for Notion blocks fetch')
+
+  const res = await fetch(`https://api.notion.com/v1/blocks/${pageId}/children?page_size=100`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Notion-Version': '2022-06-28',
+    },
+  })
+
+  if (!res.ok) return null
+  const data = await res.json()
+  const blocks = data.results ?? []
+
+  if (opts.asText === false) return blocks
+
+  // Convert blocks to plain text
+  return blocks
+    .map((block) => {
+      const type = block.type
+      const richText = block[type]?.rich_text ?? []
+      const text = richText.map((t) => t.plain_text).join('')
+
+      switch (type) {
+        case 'heading_1':
+          return `# ${text}`
+        case 'heading_2':
+          return `## ${text}`
+        case 'heading_3':
+          return `### ${text}`
+        case 'bulleted_list_item':
+          return `- ${text}`
+        case 'numbered_list_item':
+          return `1. ${text}`
+        case 'to_do':
+          return `[${block.to_do?.checked ? 'x' : ' '}] ${text}`
+        case 'code':
+          return `\`\`\`\n${text}\n\`\`\``
+        case 'quote':
+          return `> ${text}`
+        case 'divider':
+          return '---'
+        case 'paragraph':
+          return text
+        default:
+          return text
+      }
+    })
+    .filter(Boolean)
+    .join('\n\n')
+}
