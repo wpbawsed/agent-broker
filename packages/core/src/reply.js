@@ -2,9 +2,13 @@
  * reply.js — reply_to URI parsing and dispatch
  *
  * Supported reply_to.channel formats:
- *   slack://C1234567            → Slack chat.postMessage
- *   jira://PROJ-123             → Jira REST comment
- *   webhook://https://...       → HTTP POST
+ *   slack://C1234567                      → Slack chat.postMessage
+ *   jira://PROJ-123                       → Jira REST comment
+ *   notion://{pageId}                     → Notion page property update
+ *   line://{userId}                       → LINE push message
+ *   github://{owner}/{repo}/{number}      → GitHub issue / PR comment
+ *   railway://{projectId}/{serviceId}     → Railway (log only, no reply)
+ *   webhook://https://...                 → HTTP POST
  */
 
 /**
@@ -21,7 +25,7 @@ export const parseReplyChannel = (channel) => {
  *
  * @param {object} replyTo  - BrokerEvent.reply_to
  * @param {string} text     - Reply text
- * @param {object} [opts]   - Optional: { slackToken, jiraBaseUrl, jiraToken }
+ * @param {object} [opts]   - Optional: { slackToken, jiraBaseUrl, jiraToken, notionToken, githubToken, lineToken }
  */
 export const dispatchReply = async (replyTo, text, opts = {}) => {
   const { protocol, target } = parseReplyChannel(replyTo.channel)
@@ -31,6 +35,14 @@ export const dispatchReply = async (replyTo, text, opts = {}) => {
       return dispatchSlack(target, replyTo.thread_ts, text, opts)
     case 'jira':
       return dispatchJira(target, text, opts)
+    case 'notion':
+      return dispatchNotion(target, text, opts)
+    case 'line':
+      return dispatchLine(target, text, replyTo.metadata, opts)
+    case 'github':
+      return dispatchGitHub(target, text, opts)
+    case 'railway':
+      return dispatchRailway(target, text, replyTo.metadata)
     case 'webhook':
       return dispatchWebhook(target, text, replyTo.metadata)
     default:
@@ -102,6 +114,91 @@ const dispatchWebhook = async (url, text, metadata) => {
     throw new Error(`Webhook error ${res.status}: ${err}`)
   }
   return { ok: true, status: res.status }
+}
+
+/**
+ * Send a LINE push message to a user / group / room.
+ * target = userId / groupId / roomId (from line://{target})
+ * metadata.replyToken — if present, use Reply API (must be used within 30s of event);
+ *                       otherwise fall back to Push API.
+ */
+const dispatchLine = async (target, text, metadata, opts) => {
+  const token = opts.lineToken || process.env.LINE_CHANNEL_ACCESS_TOKEN
+  if (!token) throw new Error('LINE_CHANNEL_ACCESS_TOKEN is required for LINE replies')
+
+  const replyToken = metadata?.replyToken
+  const messages = [{ type: 'text', text: text.slice(0, 5000) }]
+
+  let url, body
+  if (replyToken) {
+    url = 'https://api.line.me/v2/bot/message/reply'
+    body = { replyToken, messages }
+  } else {
+    url = 'https://api.line.me/v2/bot/message/push'
+    body = { to: target, messages }
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API error ${res.status}: ${err}`)
+  }
+  return { ok: true }
+}
+
+/**
+ * Post a comment on a GitHub issue or pull request.
+ * target format: {owner}/{repo}/{number}
+ * e.g. github://octocat/Hello-World/1
+ */
+const dispatchGitHub = async (target, text, opts) => {
+  const token = opts.githubToken || process.env.GITHUB_TOKEN
+  if (!token) throw new Error('GITHUB_TOKEN is required for GitHub replies')
+
+  const parts = target.split('/')
+  if (parts.length < 3) throw new Error(`Invalid GitHub target: ${target} (expected owner/repo/number)`)
+  const [owner, repo, number] = parts
+
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/issues/${number}/comments`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ body: text }),
+    },
+  )
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`GitHub API error ${res.status}: ${err}`)
+  }
+  return res.json()
+}
+
+/**
+ * Railway webhook reply — Railway is typically one-way (deployment events).
+ * Logs the reply text; no API call needed unless metadata contains a callback URL.
+ */
+const dispatchRailway = async (target, text, metadata) => {
+  if (metadata?.callbackUrl) {
+    return dispatchWebhook(metadata.callbackUrl, text, metadata)
+  }
+  // Railway events are informational; just log
+  console.log(`[railway-reply] ${target}: ${text}`)
+  return { ok: true, logged: true }
 }
 
 /**
